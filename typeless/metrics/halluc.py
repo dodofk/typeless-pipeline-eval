@@ -109,10 +109,12 @@ def _novel_mask(seg: str, src: list[str], n: int) -> list[bool]:
     return mask
 
 
-def novel_spans(src: str, out: str, n_cjk: int = N_CJK,
-                n_latin: int = N_LATIN) -> HallucResult:
+def novel_spans(src: str, out: str, n_cjk: int | None = None,
+                n_latin: int | None = None) -> HallucResult:
     """out 相對於 src 的新內容。src 是**輸入逐字稿**,不是 reference ——
     幻覺的定義是「輸入裡沒有的」,不是「跟正解不一樣的」。"""
+    n_cjk = N_CJK if n_cjk is None else n_cjk
+    n_latin = N_LATIN if n_latin is None else n_latin
     src_v = source_variants(src)
     out_c = canon(out)
     if not out_c:

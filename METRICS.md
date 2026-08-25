@@ -107,6 +107,19 @@ L1 只標到接縫的兩個字。
 `rate` 是排序訊號，真正要看的是 `spans` 清單和 judge 的 `why`。
 `./tl show <run_id> <clip>` 會把兩層一起印出來。
 
+`./tl score <run_id> --n-cjk 2` 可以改參數對歷史 run 重算,不用重跑模型 ——
+用的 n 會寫進 `run.config.metrics`,所以分數永遠找得回它的計算條件。
+
+## 切開兩層誤差(gold-input arm)
+
+```bash
+./tl run --dataset evalset --input asr  --label m-asr   ...   # 餵 ASR 逐字稿
+./tl run --dataset evalset --input gold --label m-gold  ...   # 餵人工逐字稿
+```
+
+同一個潤稿模型跑兩次,差值就是「ASR 的錯誤讓潤稿層額外壞了多少」。
+`--input gold` 需要 `text/<id>-asr.txt`。
+
 ## 報表上的警告標記
 
 | 標記 | 意思 |

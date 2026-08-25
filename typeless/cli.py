@@ -25,6 +25,16 @@ from .registry import ROOT, Run, make_run_id, env_snapshot, read_index, rebuild_
 # ---------------------------------------------------------------- run
 def cmd_run(a) -> int:
     data = ds.load(a.dataset)
+
+    # gold-input arm(brief §3):餵人工逐字稿而不是 ASR 輸出,把兩層誤差切開。
+    # 同一個潤稿模型跑兩次,差值就是「ASR 的錯誤讓潤稿層額外壞了多少」。
+    if a.input == "gold":
+        missing = [i.id for i in data.items if not i.asr_ref]
+        if missing:
+            sys.exit(f"--input gold 需要人工逐字稿,這些 item 沒有:{', '.join(missing)}\n"
+                     f"  evalset 放在 text/<id>-asr.txt")
+        for i in data.items:
+            i.raw = i.asr_ref
     if a.only:
         keep = set(a.only.split(","))
         data.items = [i for i in data.items if i.id in keep]
@@ -44,7 +54,7 @@ def cmd_run(a) -> int:
 
     run = Run(run_id=make_run_id(a.label), label=a.label, arm="polish",
               dataset=data.name, env=env, notes=a.notes or "",
-              config={"polish": cfg.as_dict()})
+              config={"polish": cfg.as_dict(), "input": a.input})
 
     if not a.no_warm:
         print("暖機…", file=sys.stderr)
@@ -131,9 +141,12 @@ def cmd_list(a) -> int:
     if not rows:
         print("還沒有任何 run。")
         return 0
-    print(f"{'run_id':<34}{'arm':<8}{'dataset':<16}{'n':>4}  label")
+    # 欄寬照實際內容算 —— 寫死 34 的話,長一點的 run_id 會跟 arm 黏在一起,
+    # `./tl list | awk '{print $1}'` 就會撈到壞掉的 id。
+    w = max((len(r["run_id"]) for r in rows), default=6) + 2
+    print(f"{'run_id':<{w}}{'arm':<8}{'dataset':<16}{'n':>4}  label")
     for r in rows:
-        print(f"{r['run_id']:<34}{r.get('arm', ''):<8}{r.get('dataset', ''):<16}"
+        print(f"{r['run_id']:<{w}}{r.get('arm', ''):<8}{r.get('dataset', ''):<16}"
               f"{r.get('n', 0):>4}  {r.get('label', '')}")
     return 0
 
@@ -257,6 +270,8 @@ def main(argv=None) -> int:
     r.add_argument("--thinking", action="store_true", help="開 reasoning(潤稿不需要,慢 39 倍)")
     r.add_argument("--no-warm", action="store_true")
     r.add_argument("--judge", action="store_true", help="順便跑語意漂移判定(要 API key)")
+    r.add_argument("--input", choices=["asr", "gold"], default="asr",
+                   help="asr=餵 ASR 逐字稿(預設);gold=餵人工逐字稿,切開兩層誤差")
     r.add_argument("--only", help="只跑這幾個 id,逗號分隔")
     r.add_argument("--notes")
     r.set_defaults(fn=cmd_run)

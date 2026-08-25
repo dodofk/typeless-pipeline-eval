@@ -96,6 +96,7 @@ class Run:
                 "prompt": (self.config.get("polish") or {}).get("prompt_file"),
                 "prompt_sha": (self.config.get("polish") or {}).get("prompt_sha"),
                 "temp": (self.config.get("polish") or {}).get("temp"),
+                "input": self.config.get("input"),
                 "speed_trustworthy": self.env.get("speed_trustworthy"),
                 "aggregate": self.aggregate}
 

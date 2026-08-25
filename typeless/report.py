@@ -57,7 +57,7 @@ def table(rows: list[dict], arm: str = "polish") -> str:
     cols = ASR_COLS if arm == "asr" else POLISH_COLS
     out = []
     head = _pad("run", 26, False) + _pad("model", 16, False) + _pad("prompt", 10, False) \
-        + _pad("T", 6) + _pad("n", 5)
+        + _pad("in", 6, False) + _pad("T", 6) + _pad("n", 5)
     head += "".join(_pad(h, w) for _, h, w, _ in cols)
     out.append(head)
     out.append("-" * _w(head))
@@ -71,6 +71,7 @@ def table(rows: list[dict], arm: str = "polish") -> str:
         tmark = "?" if (temp is not None and temp > 0) else " "
         line = _pad(label[:25], 26, False) + _pad(str(r.get("model") or "—")[:15], 16, False) \
             + _pad(prompt[:9], 10, False) \
+            + _pad(r.get("input") or "—", 6, False) \
             + _pad(f"{temp}{tmark}" if temp is not None else "—", 6) \
             + _pad(str(agg.get("n", "—")), 5)
         for key, _, w, kind in cols:

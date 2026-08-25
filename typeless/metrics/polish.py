@@ -25,8 +25,14 @@ def _delta(before: int, after: int) -> dict:
 
 
 def score(item, out: str, timings: dict | None = None,
-          n_cjk: int = halluc.N_CJK, n_latin: int = halluc.N_LATIN) -> dict:
-    """item 是 tl.dataset.Item(要有 .raw),out 是模型潤完的文字。"""
+          n_cjk: int | None = None, n_latin: int | None = None) -> dict:
+    """item 是 dataset.Item(要有 .raw),out 是模型潤完的文字。
+
+    n_cjk / n_latin 預設 None 而不是直接寫 halluc.N_CJK —— 預設參數在 import 時
+    就綁死了,後來改 halluc.N_CJK 完全不會生效(`./tl score --n-cjk 2` 會靜靜地
+    什麼都沒做)。要在呼叫當下才解析。"""
+    n_cjk = halluc.N_CJK if n_cjk is None else n_cjk
+    n_latin = halluc.N_LATIN if n_latin is None else n_latin
     timings = timings or {}
 
     r = {
