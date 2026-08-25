@@ -61,13 +61,13 @@ class Item:
 
     @property
     def usable(self) -> bool:
-        """有 input 可以送進潤稿模型,而且那個 input 真的對應這段音檔。"""
-        return bool(self.raw) and not self.meta.get("parent_full")
+        """有 input 可以送進潤稿模型。有沒有 reference 是另一回事。"""
+        return bool(self.raw)
 
     @property
     def needs_asr_source(self) -> bool:
         """raw 是空的 —— 要靠 --asr-source 注入。"""
-        return not self.raw and not self.meta.get("parent_full")
+        return not self.raw
 
 
 @dataclass
@@ -86,7 +86,7 @@ class Dataset:
             if t:
                 i.raw = t
                 hit.append(i.id)
-            elif not i.meta.get("parent_full"):
+            else:
                 miss.append(i.id)
         extra = sorted(set(texts) - {i.id for i in self.items})
         return {"matched": hit, "dataset_without_asr": miss, "asr_without_dataset": extra}
@@ -159,6 +159,10 @@ def load_spokenly_evalset(root: pathlib.Path) -> Dataset:
         tw = m.get("transcript_zh_tw")
         tw_path = root / tw if tw else root / "text" / f"{i}.zh-tw.txt"
         asr_ref = tw_path.read_text().strip() if tw_path.exists() else None
+        # 切出來的片段共用母檔的完整逐字稿 —— 那不是這一段的答案,不能拿來算 CER。
+        # 但只要 ASR 對這一段各自產出逐字稿,無參考的那組指標全部有效。
+        if m.get("transcript_is_parent_full"):
+            asr_ref = None
 
         # 潤稿層的 reference 目前還不存在(manifest 裡是 null)。
         gold_final = m.get("gold_final")

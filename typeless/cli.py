@@ -73,8 +73,7 @@ def cmd_run(a) -> int:
     skipped = [i for i in data.items if not i.usable]
     if skipped and not a.include_unusable:
         for i in skipped:
-            why = "共用母檔的完整逐字稿,不是這一段的" if i.meta.get("parent_full") else "沒有 input 文字"
-            print(f"跳過 {i.id}:{why}", file=sys.stderr)
+            print(f"跳過 {i.id}:ASR 來源沒有這一段的逐字稿", file=sys.stderr)
         data.items = [i for i in data.items if i.usable]
     if not data.items:
         sys.exit("資料集是空的")
