@@ -29,3 +29,30 @@
 | 術語召回 / 保留 | `manifest.terms` 一直是空的,從來沒真的量到過 |
 
 要拿回來的話,這裡的檔案都還能跑,把 `legacy/` 加進 `sys.path` 就好。
+
+## 2026-08-25 第二批:舊腳本與舊資料
+
+`legacy/scripts/` —— 2026-08-18 TTS bakeoff 那一輪用的腳本。**沒有刪**,
+`out/RESULTS_20260818_tts_bakeoff.md` 的數字是它們跑出來的,要回頭查得靠它們。
+
+| 檔案 | 做什麼 | 現在用什麼 |
+|---|---|---|
+| `gt.py` | 打各家 ASR API 產 ground truth | `asr.py` |
+| `run_eval.py` | 跑本機 ASR + 比對 | `asr.py` + `grade.py` |
+| `score.py` | 算 CER / 術語召回 | `grade.py` |
+| `bench_polish.py` / `bench_polish_en.py` | 潤稿 A/B | `polish.py` + `grade.py` |
+| `bonsai_polish.py` | Bonsai-27B 專用潤稿 | `polish.py --url` 指過去就好 |
+| `probe_lang.py` | 探測語言參數的影響 | 一次性,沒有取代品 |
+| `export_corpus.py` | 產 TTS 測試語料 | evalset 取代 |
+| `e2e_real.py` | 端到端煙霧測試 | `asr.py` + `polish.py` |
+
+`legacy/data/` —— 舊的測試資料,已被 `evalset/` 取代:
+
+| 目錄 | 是什麼 |
+|---|---|
+| `corpus/` + `corpus.jsonl` | TTS 合成的 5 段語料。合成語音沒有真實的口吃與環境噪音,測不出真實表現 —— 這是後來改用真人錄音的原因 |
+| `gold/` | 上面那批的人工正解 |
+| `audio/` | 更早的煙霧測試音檔(s_long / s_short / smoke) |
+
+`.ornith_expect` / `.qwen_expect`(各 11 bytes,只有一個檔案大小數字,
+沒有任何東西引用)已刪除。
