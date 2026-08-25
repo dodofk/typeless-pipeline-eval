@@ -1,0 +1,20 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "local-typeless"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "zhconv" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "zhconv", specifier = ">=1.4.3" }]
+
+[[package]]
+name = "zhconv"
+version = "1.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/47/c8ae2d5d4025e253211ff3d8c163f457db1da94976cb582337a5ab76cb87/zhconv-1.4.3.tar.gz", hash = "sha256:ad42d9057ca0605f8e41d62b67ca797f879f58193ee6840562c51459b2698c45", size = 211571, upload-time = "2021-10-31T05:59:44.096Z" }

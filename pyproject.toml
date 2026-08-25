@@ -1,0 +1,9 @@
+[project]
+name = "local-typeless"
+version = "0.1.0"
+description = "口說 → STT → LLM 潤稿 pipeline 的 metric codebase"
+requires-python = ">=3.12"
+dependencies = ["zhconv>=1.4.3"]
+
+[tool.uv]
+package = false
