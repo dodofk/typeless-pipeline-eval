@@ -1,35 +1,18 @@
 #!/usr/bin/env python3
-"""grade.py —— 獨立評分腳本:吃檔案,吐分數。不連任何東西。
+"""grade.py —— 評分。吃檔案,吐分數。除了 --judge 之外不連任何東西。
 
-跟 ./tl 的差別:./tl 會自己去跑模型、去 OpenWhispr 的 SQLite 撈結果。
-這支不會。它只讀你給的路徑,所以任何 pipeline 只要把結果轉成下面的格式就能評。
+    uv run python grade.py --asr asr/breeze.jsonl --ref evalset/
+    uv run python grade.py --asr asr/breeze.jsonl --polish polish/breeze-qwen35-v2.jsonl \
+                           --ref evalset/ --judge --per-item
 
-    uv run python grade.py --asr  asr/whisper.jsonl \
-                           --polish polish/qwen35-v2.jsonl \
-                           --ref  evalset/
+指標只有這幾個,兩層都一樣:
 
-格式(JSONL,一行一個 item,用 id 對接):
+    CER        字元錯誤率。要有 reference 才算得出來
+    runtime_s  這一題花了幾秒
+    RTF        runtime_s / 音檔秒數。越小越快,<1 才跟得上說話
+    judge      幻覺 + 品質(1-5),LLM 判的,要 --judge 才會跑
 
-  --asr FILE       ASR 逐字稿(潤稿層的 input 也是它)
-                   {"id":"teach-01","text":"...","dur_s":106.8,"elapsed_s":12.4}
-                   必填 id / text。dur_s、elapsed_s 有才算得出 RTF。
-
-  --polish FILE    潤稿輸出
-                   {"id":"teach-01","text":"...","input":"...",
-                    "latency_s":15.0,"gen_tok":376,"tok_s":27.1,"prompt_tok":890}
-                   必填 id / text。input 省略的話用 --asr 同 id 的 text。
-                   →→ 潤稿層一半的指標(語助詞移除率、口吃、幻覺)是拿 output
-                      跟 input 比出來的。沒有 input 這些全部變 None。
-
-  --ref FILE|DIR   正解。JSONL:
-                   {"id":"teach-01","asr_ref":"...","polish_ref":"...",
-                    "terms":[["BM25","B M 25"],["int8"]],"dur_s":106.8}
-                   全部欄位都是選填 —— 缺的指標回 None,不是 0。
-                   也可以直接給 evalset/ 目錄(有 manifest.jsonl 就自動讀)。
-
-三個路徑都可以改成「一個資料夾裝 <id>.txt」,懶得寫 JSONL 時用。
-
-輸出:stdout 一張表;--out x.json 存完整的每題明細。
+RAM / CPU / 溫度不在這裡 —— 那是跑的時候要監控的東西,用 monitor.py。
 """
 
 from __future__ import annotations
@@ -37,19 +20,15 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import statistics as st
 import sys
-from types import SimpleNamespace
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from typeless.dataset import Item                      # noqa: E402
-from typeless.metrics import asr as m_asr              # noqa: E402
-from typeless.metrics import polish as m_polish        # noqa: E402
-from typeless.scoring import aggregate                 # noqa: E402
+from typeless.norm import canon, cer as _cer          # noqa: E402
 
 
 # ---------------------------------------------------------------- 讀檔
-
 def _read_jsonl(p: pathlib.Path) -> list[dict]:
     out = []
     for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
@@ -66,28 +45,20 @@ def _read_jsonl(p: pathlib.Path) -> list[dict]:
     return out
 
 
-def _read_dir(d: pathlib.Path, suffix: str = ".txt") -> list[dict]:
-    """一個資料夾裝 <id>.txt。err_* 開頭的跳過(舊腳本會把錯誤訊息寫成檔案)。"""
-    recs = []
-    for p in sorted(d.glob(f"*{suffix}")):
-        if p.name.startswith("err_"):
-            continue
-        recs.append({"id": p.name[: -len(suffix)], "text": p.read_text(encoding="utf-8").strip()})
-    return recs
+def _read_dir(d: pathlib.Path) -> list[dict]:
+    return [{"id": p.stem, "text": p.read_text(encoding="utf-8").strip()}
+            for p in sorted(d.glob("*.txt")) if not p.name.startswith("err_")]
 
 
 def load_texts(spec: str, what: str) -> dict[str, dict]:
-    """回傳 {id: record}。record 至少有 text。"""
     p = pathlib.Path(spec)
     if not p.exists():
         raise SystemExit(f"--{what} 指到的路徑不存在:{p}")
-    recs = _read_dir(p) if p.is_dir() else _read_jsonl(p)
-
     out: dict[str, dict] = {}
-    for r in recs:
+    for r in (_read_dir(p) if p.is_dir() else _read_jsonl(p)):
         i = r.get("id")
         if not i:
-            raise SystemExit(f"--{what} 有一筆沒有 id:{json.dumps(r, ensure_ascii=False)[:80]}")
+            raise SystemExit(f"--{what} 有一筆沒有 id")
         if i in out:
             raise SystemExit(f"--{what} 的 id 重複:{i}")
         if "text" not in r:
@@ -99,197 +70,212 @@ def load_texts(spec: str, what: str) -> dict[str, dict]:
 
 
 def load_ref(spec: str) -> dict[str, dict]:
-    """正解。JSONL / 資料夾 / evalset 目錄(有 manifest.jsonl)三種都吃。"""
     p = pathlib.Path(spec)
     if not p.exists():
         raise SystemExit(f"--ref 指到的路徑不存在:{p}")
-
     if p.is_dir() and (p / "manifest.jsonl").exists():
         return _ref_from_manifest(p)
-
-    recs = _read_dir(p, ".txt") if p.is_dir() else _read_jsonl(p)
     out = {}
-    for r in recs:
+    for r in (_read_dir(p) if p.is_dir() else _read_jsonl(p)):
         i = r.get("id")
         if not i:
             raise SystemExit("--ref 有一筆沒有 id")
-        # 資料夾模式:一律當潤稿正解,因為那是最常見的用法
-        if "text" in r and "polish_ref" not in r and "asr_ref" not in r:
-            r = {"id": i, "polish_ref": r["text"]}
+        if "text" in r and "asr_ref" not in r and "polish_ref" not in r:
+            r = {"id": i, "polish_ref": r["text"]}      # 資料夾模式一律當潤稿正解
         out[i] = r
     return out
 
 
 def _ref_from_manifest(root: pathlib.Path) -> dict[str, dict]:
-    """evalset 的 manifest.jsonl。
+    """evalset/manifest.jsonl。
 
     ⚠️ text/<id>.zh-tw.txt 是**逐字稿**(語助詞還在),掛在 asr_ref。
-       拿它當潤稿正解會讓指標整個反過來 —— 什麼都不刪的模型 CER 最低。
+       拿它當潤稿正解會讓指標反過來 —— 什麼都不刪的模型 CER 最低。
        潤稿正解要等 manifest 的 gold_final 有值。
     """
     out = {}
     for m in _read_jsonl(root / "manifest.jsonl"):
-        i = m["id"]
         asr_ref = None
         tp = m.get("transcript_zh_tw")
         if tp and not m.get("transcript_is_parent_full"):
             f = root / tp
-            if f.exists():
-                asr_ref = f.read_text(encoding="utf-8").strip()
-        gf = m.get("gold_final")
+            asr_ref = f.read_text(encoding="utf-8").strip() if f.exists() else None
         polish_ref = None
-        if gf:
-            f = root / gf
-            polish_ref = f.read_text(encoding="utf-8").strip() if f.exists() else gf
-        out[i] = {"id": i, "asr_ref": asr_ref, "polish_ref": polish_ref,
-                  "dur_s": m.get("duration_sec"), "terms": m.get("terms") or [],
-                  "tags": m.get("tags") or []}
+        if m.get("gold_final"):
+            f = root / m["gold_final"]
+            polish_ref = f.read_text(encoding="utf-8").strip() if f.exists() else m["gold_final"]
+        out[m["id"]] = {"id": m["id"], "asr_ref": asr_ref, "polish_ref": polish_ref,
+                        "dur_s": m.get("duration_sec")}
     return out
 
 
-def _terms(v) -> list[tuple[str, ...]]:
-    return [tuple(t) if isinstance(t, (list, tuple)) else (t,) for t in (v or [])]
+# ---------------------------------------------------------------- 指標
+def score_one(text: str, ref: str | None, runtime_s: float | None,
+              dur_s: float | None) -> dict:
+    """一題的三個指標。算不出來的回 None,不回 0 —— 「沒量到」不是「量到 0」。"""
+    return {
+        "cer": round(_cer(ref, text), 4) if ref else None,
+        "runtime_s": round(runtime_s, 3) if runtime_s else None,
+        "rtf": round(runtime_s / dur_s, 4) if (runtime_s and dur_s) else None,
+        "n_chars": len(canon(text)),
+    }
 
 
-# ---------------------------------------------------------------- 評分
+def _mean(vals):
+    v = [x for x in vals if isinstance(x, (int, float))]
+    return round(st.mean(v), 4) if v else None
 
-def grade(asr: dict, polish: dict, ref: dict, n_cjk=None, n_latin=None,
-          use_judge: bool = False) -> dict:
-    """回傳 {"asr": {...}, "polish": {...}, "coverage": {...}}。少的欄位就是 None。"""
-    res: dict = {"coverage": {}}
 
+def aggregate(items: list[dict]) -> dict:
+    """比率取平均、時間取總和。混著用會誤導。"""
+    m = [i["metrics"] for i in items]
+    rt = [x["runtime_s"] for x in m if x["runtime_s"]]
+    jud = [x.get("judge") for x in m if x.get("judge") and not x["judge"].get("error")]
+    jerr = sum(1 for x in m if x.get("judge") and x["judge"].get("error"))
+    return {
+        "n": len(items),
+        "n_scored": sum(1 for x in m if x["cer"] is not None),
+        "cer": _mean(x["cer"] for x in m),
+        "cer_median": round(st.median([x["cer"] for x in m if x["cer"] is not None]), 4)
+                      if any(x["cer"] is not None for x in m) else None,
+        "rtf": _mean(x["rtf"] for x in m),
+        "rtf_median": round(st.median([x["rtf"] for x in m if x["rtf"]]), 4)
+                      if any(x["rtf"] for x in m) else None,
+        "runtime_total_s": round(sum(rt), 1) if rt else None,
+        "runtime_mean_s": _mean(rt),
+        "runtime_max_s": round(max(rt), 1) if rt else None,
+        # judge
+        "quality": _mean(j.get("quality") for j in jud) if jud else None,
+        "quality_min": min((j["quality"] for j in jud if j.get("quality")), default=None),
+        "halluc_items": sum(1 for j in jud if j.get("n_halluc")) or None,
+        "halluc_high": sum(j.get("n_high", 0) for j in jud) or None,
+        "judged": len(jud) or None,
+        "judge_err": jerr or None,
+    }
+
+
+# ---------------------------------------------------------------- 主流程
+def grade(asr: dict, polish: dict, ref: dict, use_judge: bool, jcfg) -> dict:
+    from typeless.judge import judge as run_judge
+
+    res: dict = {}
     if asr:
         items = []
         for i, r in asr.items():
             rf = ref.get(i, {})
-            it = Item(id=i, asr_ref=rf.get("asr_ref"),
-                      dur_s=r.get("dur_s") or rf.get("dur_s"),
-                      terms=_terms(rf.get("terms")), tags=rf.get("tags") or [])
-            items.append({"id": i, "out": r["text"],
-                          "metrics": m_asr.score(it, r["text"], r.get("elapsed_s"))})
-        res["asr"] = {"items": items,
-                      "aggregate": aggregate(SimpleNamespace(arm="asr", items=items))}
-        res["coverage"]["asr_ref"] = sum(1 for i in asr if ref.get(i, {}).get("asr_ref"))
+            items.append({"id": i, "metrics": score_one(
+                r["text"], rf.get("asr_ref"), r.get("elapsed_s"),
+                r.get("dur_s") or rf.get("dur_s"))})
+        res["asr"] = {"items": items, "aggregate": aggregate(items)}
 
     if polish:
         items = []
         for i, r in polish.items():
             rf = ref.get(i, {})
             src = r.get("input") or (asr.get(i, {}) or {}).get("text", "")
-            it = Item(id=i, raw=src, ref=rf.get("polish_ref"),
-                      dur_s=r.get("dur_s") or rf.get("dur_s"),
-                      terms=_terms(rf.get("terms")), tags=rf.get("tags") or [])
-            tm = {k: r[k] for k in ("wall_s", "latency_s", "gen_tok", "tok_s", "prompt_tok")
-                  if k in r}
-            if "latency_s" in tm:
-                tm["wall_s"] = tm.pop("latency_s")
-            m = m_polish.score(it, r["text"], tm, n_cjk, n_latin)
-            if "judge" in r:                       # 檔案裡自己帶結果就用它,不重打 API
+            m = score_one(r["text"], rf.get("polish_ref"),
+                          r.get("latency_s") or r.get("elapsed_s"),
+                          r.get("dur_s") or rf.get("dur_s"))
+            if "judge" in r:                       # 檔案裡帶了就用,不重打 API
                 m["judge"] = r["judge"]
-            elif use_judge and src:
-                from typeless.judge import judge as _judge     # 只有要用才 import
-                print(f"  judge {i} …", file=sys.stderr)
-                m["judge"] = _judge(src, r["text"]).as_dict()
-            items.append({"id": i, "raw": src, "out": r["text"], "metrics": m})
-        res["polish"] = {"items": items,
-                         "aggregate": aggregate(SimpleNamespace(arm="polish", items=items))}
-        res["coverage"]["polish_input"] = sum(1 for it in items if it["raw"])
-        res["coverage"]["polish_ref"] = sum(1 for i in polish if ref.get(i, {}).get("polish_ref"))
+            elif use_judge:
+                if not src:
+                    m["judge"] = {"error": "沒有 input,judge 需要對照原文"}
+                else:
+                    print(f"  judge {i} …", file=sys.stderr)
+                    m["judge"] = run_judge(src, r["text"], jcfg).as_dict()
+            items.append({"id": i, "input_chars": len(src), "metrics": m})
+        res["polish"] = {"items": items, "aggregate": aggregate(items)}
 
     return res
 
 
 # ---------------------------------------------------------------- 印表
-
-def _f(v, pct=False, nd=1):
+def _f(v, pct=False, nd=2, unit=""):
     if v is None:
         return "—"
-    if pct:
-        return f"{v * 100:.{nd}f}%"
-    return f"{v:.{nd}f}" if isinstance(v, float) else str(v)
+    return f"{v * 100:.{nd}f}%" if pct else f"{v:.{nd}f}{unit}"
+
+
+def _section(name: str, a: dict) -> None:
+    print(f"\n=== {name} ===")
+    print(f"  n              {a['n']}"
+          + (f"   (有正解可算 CER 的:{a['n_scored']})" if a['n_scored'] != a['n'] else ""))
+    print(f"  CER            平均 {_f(a['cer'], pct=True)}   中位 {_f(a['cer_median'], pct=True)}")
+    print(f"  RTF            平均 {_f(a['rtf'], nd=3)}   中位 {_f(a['rtf_median'], nd=3)}"
+          "        (處理秒數/音檔秒數)")
+    print(f"  runtime        總計 {_f(a['runtime_total_s'], nd=1, unit='s')}"
+          f"   平均 {_f(a['runtime_mean_s'], nd=1, unit='s')}"
+          f"   最慢 {_f(a['runtime_max_s'], nd=1, unit='s')}")
+    if a["judged"] or a["judge_err"]:
+        print(f"  品質(1-5)     平均 {_f(a['quality'], nd=2)}   最低 {a['quality_min'] or '—'}"
+              f"        已判 {a['judged'] or 0} 題"
+              + (f"   ⚠️ {a['judge_err']} 題判定失敗(不列入)" if a["judge_err"] else ""))
+        print(f"  幻覺           {a['halluc_items'] or 0} 題有"
+              f"   其中 high {a['halluc_high'] or 0} 處")
 
 
 def print_report(res: dict, per_item: bool) -> None:
-    a = res.get("asr", {}).get("aggregate")
-    if a:
-        print("\n=== ASR ===")
-        print(f"  n            {a['n']}")
-        print(f"  CER          {_f(a.get('cer'), pct=True, nd=2)}")
-        print(f"  術語召回      {_f(a.get('term_recall'), pct=True)}  {a.get('term_hit') or ''}")
-        print(f"  長度比 vs 正解 {_f(a.get('len_ratio'), nd=3)}   (<0.9 = 有整句被吞)")
-        print(f"  RTF          {_f(a.get('rtf'), nd=3)}")
-        print(f"  簡體殘留      {a.get('simp_chars')} 字")
+    for key, name in (("asr", "ASR"), ("polish", "POLISH")):
+        if key in res:
+            _section(name, res[key]["aggregate"])
 
-    p = res.get("polish", {}).get("aggregate")
-    if p:
-        print("\n=== POLISH ===")
-        print(f"  n            {p['n']}")
-        print(f"  語助詞 A 殘留  {p.get('filler_a_out')} / 輸入 {p.get('filler_a_in')}"
-              f"   移除率 {_f(p.get('filler_a_removed'), pct=True)}")
-        print(f"  語助詞 B 殘留  {p.get('filler_b_out')}")
-        print(f"  口吃殘留      {p.get('stutter_out')}   移除率 {_f(p.get('stutter_removed'), pct=True)}")
-        print(f"  簡體殘留      {p.get('simp_out')} 字")
-        print(f"  長度比 vs 輸入 {_f(p.get('len_ratio_raw'), nd=3)}   (<0.7 = 刪過頭)")
-        print(f"  幻覺率        {_f(p.get('halluc_rate'), pct=True, nd=2)}"
-              f"   ({p.get('halluc_chars')} 字憑空出現)")
-        print(f"  漂移(judge)  {_f(p.get('drift_high'))} high / {_f(p.get('drift_n'))} 全部"
-              f"   已判 {_f(p.get('judged'))} 題"
-              + (f"   ⚠️ {p['judge_err']} 題判定失敗(不列入)" if p.get("judge_err") else ""))
-        print(f"  CER vs 正解   {_f(p.get('cer_ref'), pct=True, nd=2)}")
-        print(f"  術語保留      {_f(p.get('term_keep'), pct=True)}")
-        print(f"  速度          {_f(p.get('tok_s'), nd=2)} tok/s   延遲 {_f(p.get('latency_s'), nd=1)}s")
-
-    c = res.get("coverage", {})
-    if c:
-        print("\n--- 覆蓋率(缺的指標會是 —,不是 0)---")
-        if "polish_input" in c:
-            n = res["polish"]["aggregate"]["n"]
-            print(f"  潤稿 input   {c['polish_input']}/{n}"
-                  + ("   ⚠️ 沒有 input 的題目算不出移除率/幻覺"
-                     if c["polish_input"] < n else ""))
-        if "asr_ref" in c:
-            print(f"  ASR 正解     {c['asr_ref']}/{res['asr']['aggregate']['n']}")
-        if "polish_ref" in c:
-            print(f"  潤稿正解     {c['polish_ref']}/{res['polish']['aggregate']['n']}")
-
-    if per_item and res.get("polish"):
-        print("\n--- 每題(潤稿)---")
-        print(f"{'id':<14}{'語助A':>7}{'口吃':>6}{'簡':>5}{'長度比':>8}{'幻覺':>8}{'CER':>8}")
-        for it in res["polish"]["items"]:
+    if not per_item:
+        return
+    for key, name in (("asr", "ASR"), ("polish", "POLISH")):
+        if key not in res:
+            continue
+        print(f"\n--- 每題({name})---")
+        has_j = any(i["metrics"].get("judge") for i in res[key]["items"])
+        head = f"{'id':<13}{'CER':>9}{'runtime':>10}{'RTF':>8}"
+        if has_j:
+            head += f"{'品質':>6}{'幻覺':>6}{'high':>6}"
+        print(head)
+        for it in res[key]["items"]:
             m = it["metrics"]
-            print(f"{it['id']:<14}{m['filler_a']['out']:>7}{m['stutter']['out']:>6}"
-                  f"{m['simp']['out']:>5}{_f(m.get('len_ratio_raw'), nd=2):>8}"
-                  f"{_f((m.get('halluc') or {}).get('rate'), pct=True, nd=2):>8}"
-                  f"{_f(m.get('cer_ref'), pct=True, nd=2):>8}")
+            row = (f"{it['id']:<13}{_f(m['cer'], pct=True):>9}"
+                   f"{_f(m['runtime_s'], nd=1, unit='s'):>10}{_f(m['rtf'], nd=3):>8}")
+            j = m.get("judge")
+            if has_j:
+                if j and not j.get("error"):
+                    row += f"{j.get('quality') or '—':>6}{j.get('n_halluc', 0):>6}{j.get('n_high', 0):>6}"
+                else:
+                    row += f"{'—':>6}{'—':>6}{'—':>6}"
+            print(row)
 
-    if per_item and res.get("asr"):
-        print("\n--- 每題(ASR)---")
-        print(f"{'id':<14}{'CER':>9}{'長度比':>9}{'RTF':>8}{'簡':>5}")
-        for it in res["asr"]["items"]:
-            m = it["metrics"]
-            print(f"{it['id']:<14}{_f(m.get('cer'), pct=True, nd=2):>9}"
-                  f"{_f(m.get('len_ratio'), nd=3):>9}{_f(m.get('rtf'), nd=3):>8}"
-                  f"{m.get('simp_chars', 0):>5}")
+
+def print_halluc(res: dict) -> None:
+    items = [i for i in res.get("polish", {}).get("items", [])
+             if (i["metrics"].get("judge") or {}).get("hallucinations")]
+    if not items:
+        return
+    print("\n--- judge 抓到的幻覺 ---")
+    for it in items:
+        j = it["metrics"]["judge"]
+        print(f"\n[{it['id']}]  品質 {j.get('quality')} — {j.get('quality_why', '')}")
+        for h in j["hallucinations"]:
+            print(f"  ({h.get('severity')}/{h.get('kind')}) 「{str(h.get('span'))[:70]}」")
+            if h.get("basis"):
+                print(f"     來源應該是:「{str(h['basis'])[:70]}」")
+            print(f"     {h.get('why', '')}")
 
 
 # ---------------------------------------------------------------- CLI
-
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="評分。吃檔案,不連任何東西。",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__)
-    ap.add_argument("--asr", help="ASR 逐字稿 JSONL / 資料夾")
-    ap.add_argument("--polish", help="潤稿輸出 JSONL / 資料夾")
+        description="評分:CER / runtime / RTF / judge(幻覺 + 品質)",
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    ap.add_argument("--asr", help="ASR 逐字稿 JSONL 或資料夾")
+    ap.add_argument("--polish", help="潤稿輸出 JSONL 或資料夾")
     ap.add_argument("--ref", help="正解 JSONL / 資料夾 / evalset 目錄")
-    ap.add_argument("--out", help="把完整明細寫成 JSON")
-    ap.add_argument("--per-item", action="store_true", help="連每一題都印")
-    ap.add_argument("--json", action="store_true", help="只印 JSON,不印表")
-    ap.add_argument("--n-cjk", type=int, default=None, help="幻覺:中文 n-gram(預設 3)")
-    ap.add_argument("--n-latin", type=int, default=None, help="幻覺:英文 n-gram(預設 4)")
+    ap.add_argument("--out", help="完整明細寫成 JSON")
+    ap.add_argument("--per-item", action="store_true")
+    ap.add_argument("--json", action="store_true", help="只印 JSON")
     ap.add_argument("--judge", action="store_true",
-                    help="加算語意漂移(LLM-as-a-judge)。⚠️ 只有這個選項會連網,"
-                         "需要 MINIMAX_API_KEY。不加就完全離線。")
+                    help="跑 LLM judge(幻覺 + 品質)。⚠️ 只有這個選項會連網")
+    ap.add_argument("--judge-model", default="", help="預設讀 JUDGE_MODEL,再退回 gpt-5.4-mini")
+    ap.add_argument("--judge-base-url", default="", help="預設讀 JUDGE_BASE_URL,再退回 OpenAI")
+    ap.add_argument("--judge-url", default="", help="完整 endpoint 覆寫(路徑不標準的供應商)")
     a = ap.parse_args()
 
     if not a.asr and not a.polish:
@@ -299,28 +285,33 @@ def main() -> int:
     polish = load_texts(a.polish, "polish") if a.polish else {}
     ref = load_ref(a.ref) if a.ref else {}
 
-    # 對帳:兩邊 id 對不起來要講,不能靜靜少算幾題
     if asr and polish:
         only_p = sorted(set(polish) - set(asr))
         if only_p:
-            print(f"⚠️  {len(only_p)} 題只有潤稿沒有 ASR,無法算移除率/幻覺:"
-                  f"{', '.join(only_p[:5])}{' …' if len(only_p) > 5 else ''}", file=sys.stderr)
+            print(f"⚠️  {len(only_p)} 題只有潤稿沒有 ASR:{', '.join(only_p[:5])}", file=sys.stderr)
     if ref:
         unknown = sorted((set(asr) | set(polish)) - set(ref))
         if unknown:
-            print(f"⚠️  {len(unknown)} 題在 --ref 裡找不到:"
-                  f"{', '.join(unknown[:5])}{' …' if len(unknown) > 5 else ''}", file=sys.stderr)
+            print(f"⚠️  {len(unknown)} 題在 --ref 裡找不到:{', '.join(unknown[:5])}", file=sys.stderr)
 
-    res = grade(asr, polish, ref, a.n_cjk, a.n_latin, a.judge)
+    jcfg = None
+    if a.judge:
+        from typeless.judge import JudgeConfig
+        jcfg = JudgeConfig(model=a.judge_model, base_url=a.judge_base_url, url=a.judge_url)
+        url, model, key = jcfg.resolved()
+        print(f"judge:{model} @ {url}" + ("" if key else "   ⚠️ 沒有 API key"), file=sys.stderr)
+
+    res = grade(asr, polish, ref, a.judge, jcfg)
 
     if a.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
     else:
         print_report(res, a.per_item)
+        print_halluc(res)
 
     if a.out:
-        pathlib.Path(a.out).write_text(
-            json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+        pathlib.Path(a.out).write_text(json.dumps(res, ensure_ascii=False, indent=2),
+                                       encoding="utf-8")
         print(f"\n→ {a.out}")
     return 0
 

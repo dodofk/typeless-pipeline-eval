@@ -35,8 +35,8 @@ uv run python grade.py --asr asr/whisper.jsonl \
 | `dur_s` | | 音檔秒數。沒有就算不出 RTF |
 | `elapsed_s` | | ASR 花的秒數。沒有就算不出 RTF |
 
-**這個檔同時也是潤稿層的 input。** 潤稿的一半指標(語助詞移除率、口吃移除率、
-簡體移除率、長度比、幻覺率)是拿 output 跟 input 比出來的 —— 沒有 input 就全是 `—`。
+**這個檔同時也是潤稿層的 input。** judge 要拿 output 跟 input 對照才判得出幻覺 ——
+沒有 input 就只剩 runtime 和 RTF。
 
 ### `--polish` —— 潤稿輸出
 
@@ -51,11 +51,11 @@ uv run python grade.py --asr asr/whisper.jsonl \
 | `text` | ✅ | 潤完的文字 |
 | `input` | | 這一題真正送進模型的文字。省略就用 `--asr` 同 id 的 `text` |
 | `latency_s` / `gen_tok` / `tok_s` / `prompt_tok` | | 速度。缺就不報 |
-| `judge` | | 已經在別處算好的漂移結果,格式同 `--judge` 的輸出。有就不重打 API |
+| `judge` | | 已經算好的 judge 結果,格式同 `--judge` 的輸出。有就不重打 API |
 
 如果你的 pipeline 在 ASR 跟 LLM 之間還做了別的事(切句、標點還原、
-前處理),把**實際送進 LLM 的那份**寫進 `input`。否則移除率會算錯 ——
-分母不是你以為的那個分母。
+前處理),把**實際送進 LLM 的那份**寫進 `input`。否則 judge 會拿錯的原文去比,
+把你前處理加的東西當成模型掰的。
 
 ### `--ref` —— 正解(全部選填)
 
@@ -63,15 +63,13 @@ uv run python grade.py --asr asr/whisper.jsonl \
 {"id": "teach-01",
  "asr_ref": "呃 我們來看一下 BM25 的分數",
  "polish_ref": "我們來看一下 BM25 的分數。",
- "terms": [["BM25", "B M 25"], ["int8"]],
  "dur_s": 106.76}
 ```
 
 | 欄位 | 給了才算得出 |
 |---|---|
-| `asr_ref` | ASR 層的 CER、長度比、術語召回 |
-| `polish_ref` | 潤稿層的 `cer_ref`、`len_ratio_ref`、術語保留 |
-| `terms` | 術語召回 / 保留。每一項是一組**等價寫法**,任一命中就算有 |
+| `asr_ref` | ASR 層的 CER |
+| `polish_ref` | 潤稿層的 CER |
 | `dur_s` | RTF |
 
 沒給的欄位,對應指標回 `—`(不是 0)。表最下面的「覆蓋率」會告訴你幾題有正解。
@@ -101,11 +99,13 @@ stdout 一張表;`--out x.json` 存完整明細,結構是:
 
 ```
 {
-  "asr":    {"items": [{"id", "out", "metrics"}, …], "aggregate": {…}},
-  "polish": {"items": [{"id", "raw", "out", "metrics"}, …], "aggregate": {…}},
-  "coverage": {"polish_input": 15, "asr_ref": 12, "polish_ref": 0}
+  "asr":    {"items": [{"id", "metrics"}, …], "aggregate": {…}},
+  "polish": {"items": [{"id", "input_chars", "metrics"}, …], "aggregate": {…}}
 }
 ```
+
+每一題的 `metrics` 就四個欄位:`cer` / `runtime_s` / `rtf` / `n_chars`,
+加上 `--judge` 時多一個 `judge`。算不出來的是 `null`,不是 0。
 
 `metrics` 的每個欄位是什麼,看 [`METRICS.md`](./METRICS.md)。
 
@@ -113,6 +113,8 @@ stdout 一張表;`--out x.json` 存完整明細,結構是:
 
 ## 離線
 
-`grade.py` 預設**完全不連網**。唯一的例外是 `--judge`(語意漂移,
-LLM-as-a-judge,需要 `MINIMAX_API_KEY`)。沒設金鑰時它不會假裝成功 ——
-會報「N 題判定失敗(不列入)」,不會把「沒量到」寫成 0 drift。
+`grade.py` 預設**完全不連網**。唯一的例外是 `--judge`(幻覺 + 品質,
+需要 `JUDGE_API_KEY` 或 `OPENAI_API_KEY`)。沒設金鑰時它不會假裝成功 ——
+會報「N 題判定失敗(不列入)」,不會把「沒量到」寫成 0 個幻覺。
+
+judge 是 **OpenAI 相容**的,`JUDGE_BASE_URL` / `JUDGE_MODEL` 可以指到任何供應商。
