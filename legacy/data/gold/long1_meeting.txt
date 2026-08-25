@@ -1,1 +1,0 @@
-欸那個我先講一下這禮拜的進度好了。就是我們原本那個 baseline 的 model 我有重新跑過一次，結果發現 accuracy 其實沒有想像中那麼低，大概是七十八點五 percent 左右。可是 latency 就真的有點慘，平均一個 request 要一點二秒，這個在 production 上面應該是不能接受的。所以我後來有試著把那個 batch size 從三十二調到六十四，然後也把 quantization 開起來，用 int8 那個版本，速度大概快了兩倍多，可是 accuracy 掉了三個百分點左右。我覺得這個 trade-off 還可以再看看，可能要跟大家討論一下我們到底比較在意哪一個。

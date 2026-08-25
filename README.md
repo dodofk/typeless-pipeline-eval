@@ -100,7 +100,7 @@ uv run python polish.py --asr asr/breeze.jsonl --out polish/mine.jsonl
 
 - 輸入就是 `asr.py` 的輸出
 - `--temp 0` 是預設。**A/B 比較一定要 temp=0**,不然差異可能純粹是雜訊
-- prompt 用 `--prompt prompts/xxx.txt` 換,檔案的 sha8 會記進輸出
+- prompt 用 `--prompt <檔案>` 換,檔案的 sha8 會記進輸出 —— prompt 改了但檔名沒改的話,只有 sha 認得出來
 
 ### `grade.py` — 算分
 
@@ -219,8 +219,7 @@ typeless/
 funasr_server.py breeze_server.py        本機 ASR 的 OpenAI 相容 shim
 run_*.sh                                 起 llama-server 的腳本
 evalset/                                 資料集
-prompts/                                 潤稿 prompt
-legacy/                                  舊的 ./tl 那套 + 舊腳本 + 舊資料(保留不刪)
+prompts/cleanup-zhTW-mixed-v2.txt        潤稿 prompt(目前這一版)
 ```
 
 ## 已知的坑

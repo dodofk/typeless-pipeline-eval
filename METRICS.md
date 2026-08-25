@@ -177,7 +177,6 @@ typeless/
   asr_engines.py  ASR 引擎驅動,asr.py 用
 evalset/          資料集(manifest.jsonl + audio/ + text/)
 prompts/          潤稿 prompt
-legacy/           舊的 ./tl 那一套,保留不刪 —— 見 legacy/README.md
 ```
 
 ## 現在量不到的東西

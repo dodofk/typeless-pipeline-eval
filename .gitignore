@@ -25,3 +25,12 @@ logs/
 # 真實錄音的逐字稿 —— 公司內部資料,不進版控
 evalset/
 results.jsonl
+
+# 只發佈需要的東西 —— 這些留在本機
+out/
+legacy/
+METRICS_BRIEF.md
+prompts/*
+!prompts/cleanup-zhTW-mixed-v2.txt
+run_bonsai27b.sh
+run_ornith.sh

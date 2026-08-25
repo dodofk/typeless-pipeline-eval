@@ -3,6 +3,12 @@
 四個引擎 × evalset 14 個 clip,全部直接呼叫引擎(沒走 OpenWhispr app)。
 產生指令在每一節下面,原始輸出在 `asr/*.jsonl`(不進版控)。
 
+> ⚠️ **這份是當天的紀錄,寫在指標收斂之前。** 後半段提到的語助詞殘留、口吃移除率、
+> 長度比、n-gram 幻覺率等指標**現在已經不在 codebase 裡了** —— 判斷「刪過頭 /
+> 掰東西」統一交給 LLM judge。留著是因為那些數字與推論過程仍然成立,而且
+> 「句尾的『啊』不該算語助詞」那一節說明了為什麼那組指標交接成本太高。
+> 目前實際在量的指標看 [`METRICS.md`](./METRICS.md)。
+
 ## CER(越低越好)
 
 `✓` = ref 是人工修過的  `~` = ref 只做過 zhconv,沒人工修  `·` = 還沒有 ref
@@ -224,7 +230,7 @@ uv run python grade.py --asr asr/breeze.jsonl --polish polish/breeze-qwen35-v2.j
 `prompts/cleanup-zhTW-mixed-v2.txt` 第 20 行寫的是 **sentence-medial 啊**,
 模型留著句尾的是**照 prompt 做對了**,是 metric 數錯。
 
-`typeless/lexicon.py` 原本的註解承認了這件事,理由是「去標點之後沒有句界可判,
+當時 `typeless/lexicon.py`(現已移除)的註解承認了這件事,理由是「去標點之後沒有句界可判,
 一律計入 —— 寧可高估,兩個 run 之間可比」。那個理由在**同一份 input 的 A/B** 上
 成立,拿來讀絕對值就錯了,跨 ASR 上游比更錯。
 
