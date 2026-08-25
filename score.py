@@ -1,3 +1,16 @@
+"""[DEPRECATED 2026-08-25] 已被 typeless/ 取代。
+
+    ./tl legacy --which asr      # 把 out/ 的歷史輸出匯成 run
+    ./tl report --arm asr        # 印這張表
+
+新舊已逐格比對過(24 個 clip):
+  - CER 一致下修約 6 個百分點。舊的 norm() 沒有中文數字轉換,gold 寫「零點三」、
+    ASR 輸出「0.3」被算成錯。whisper 15.8%→9.8%、Fun-ASR 8.7%→3.5%。排名不變。
+  - 術語召回有 2 格上修(int八→int8、B M二十五→bm25),同一個原因。
+  - PUNCT 不再吃掉 '%',所以「78.5%」跟「78.5」現在分得開。
+
+留著當回歸基準,不要當真值用。
+"""
 import sys, re, pathlib, zhconv
 PUNCT = re.compile(r"[\s，。、？！；：「」『』（）,.\?!;:\"'()%\-—…·]+")
 def norm(s):

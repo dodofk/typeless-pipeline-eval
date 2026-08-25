@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""[DEPRECATED 2026-08-25] 已被 typeless/ 取代。
+
+    ./tl run --dataset legacy-real --label <name> --url ... --model ... --temp 0
+    ./tl report --arm polish
+
+新版多了:幻覺率、語意漂移 judge、術語保留、run record(結果會落地,
+可以改了 metric 之後對歷史 run 重算)。
+FILLERS 那個清單混了 tier-A 語助詞和口吃兩件事,新版按 prompt v2 的定義分開。
+"""
 """Same prompt, same transcripts, any llama-server. Reports latency + 繁簡 residue.
 
   ./bench_polish.py --url http://localhost:8901 --model ornith-1.5-9b --tag ornith

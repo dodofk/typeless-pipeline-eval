@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""[DEPRECATED 2026-08-25] 已被 typeless/ 取代。
+
+    ./tl run --dataset legacy-real-en --label <name> --url ... --model ...
+    ./tl report --arm polish
+
+新版對 bonsai 算出 tier-A 殘留 5、口吃殘留 3 —— 跟 logs/en_bonsai.log
+記的歷史數字逐格相同。
+"""
 """English control for the polish benchmark. Same task, same prompt structure,
 same clips (translated 1:1 preserving disfluency), English instead of zh-TW.
 
