@@ -1,0 +1,19 @@
+# 大檔 / 外部 checkout —— 不進版控
+models/
+.venv-mlx/
+.venv/
+fun-asr/
+transcribe.cpp/
+openwhispr/
+
+# 音檔（用得到但太大，各自本機保存）
+*.wav
+*.mp3
+*.webm
+!audio/smoke.wav
+
+# 執行產物
+runs/
+__pycache__/
+*.pyc
+.DS_Store

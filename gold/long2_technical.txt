@@ -1,0 +1,1 @@
+架構的部分我大概說明一下。前端是用 React 加 TypeScript，後端主要是 FastAPI，然後 database 我們用 PostgreSQL，快取的部分是 Redis。model serving 那邊目前是跑在一台 A100 上面，用 vLLM 去做 inference，throughput 大概是每秒六十個 token。embedding 的部分我們用的是 BGE-M3，維度是一零二四，向量資料庫是 Qdrant。retrieval 現在是 top-K 等於五，用 hybrid search，就是 BM25 加上 dense 的分數做加權，權重我暫時設成零點三跟零點七。之後可能會加上 rerank 那一層，不過目前還沒有實作。
