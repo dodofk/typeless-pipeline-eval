@@ -45,6 +45,25 @@
 ./tl reindex  重建 runs/index.jsonl
 ```
 
+## 外部 pipeline 怎麼接 —— `grade.py`
+
+`./tl` 是「我自己跑」的路徑：它會叫模型、會去 OpenWhispr 的 SQLite 撈結果。
+
+如果潤稿是你自己的 pipeline 跑的，用 **`grade.py`**。它只讀檔案，不連任何東西：
+
+```
+uv run python grade.py --asr asr/whisper.jsonl \
+                       --polish polish/mine.jsonl \
+                       --ref evalset/ --per-item --out result.json
+```
+
+metric 的實作是同一份（`typeless/metrics/`），所以兩條路的數字一定一致 ——
+已驗過 `grade.py` 對 `runs/…-spokenly-baseline-qwen35-v2` 重算出的 aggregate
+跟 `./tl` 存的完全相同。
+
+交換格式（JSONL，三個檔用 `id` 對接）看 [`FORMATS.md`](./FORMATS.md)。
+格式轉換是呼叫端的事，這支不猜也不自動掃描。
+
 ## evalset 格式
 
 支援兩種 layout，靠有沒有 `manifest.jsonl` 自動判斷。

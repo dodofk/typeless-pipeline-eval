@@ -85,7 +85,11 @@ def aggregate(run) -> dict:
     tk = [(i["metrics"].get("term_keep") or {}) for i in items]
     hit = sum(t.get("hit", 0) for t in tk)
     tot = sum(t.get("total", 0) for t in tk)
-    jud = [i["metrics"].get("judge") for i in items if i["metrics"].get("judge")]
+    # 失敗的 judge(沒金鑰、API 掛掉)不算數 —— 算進去會變成「0 drift」,
+    # 那是「沒量到」被誤報成「量到了而且是滿分」。judge_err 另外報。
+    _j = [i["metrics"].get("judge") for i in items if i["metrics"].get("judge")]
+    jud = [j for j in _j if not j.get("error")]
+    jerr = len(_j) - len(jud)
     return {
         "n": len(items),
         # 清理:殘留是絕對數量(0 才叫乾淨),移除率是比例
@@ -110,6 +114,7 @@ def aggregate(run) -> dict:
         "drift_n": sum(j.get("n_drift", 0) for j in jud) if jud else None,
         "drift_high": sum(j.get("n_high", 0) for j in jud) if jud else None,
         "judged": len(jud) or None,
+        "judge_err": jerr or None,
         # 速度。可信度看 env.speed_trustworthy。
         "latency_s": _avg(items, ["latency_s"]),
         "tok_s": _avg(items, ["tok_s"]),
