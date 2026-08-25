@@ -2,20 +2,36 @@
 
 ASR 那一層由外部(OpenWhispr 或其他 code)產出,這裡只吃它的副產物。
 
-evalset/ 的格式(權威定義):
+支援兩種 layout,靠有沒有 manifest.jsonl 自動判斷。
+
+--- A. Spokenly layout(evalset/ 用的) ---
 
     evalset/
-      audio/<id>.wav        原始錄音。這裡不碰,留給重跑 ASR 用。
+      manifest.jsonl        一行一 item,權威索引
+      audio/<id>.wav        原始錄音
+      raw/<id>.json         Spokenly 的 dictation 匯出(含 ASR 原文與各 stage)
+      text/<id>.zh-cn.txt   ASR 原始輸出,一字未動
+      text/<id>.zh-tw.txt   上面那個轉繁 + 人工修正(逐字稿,語助詞還在)
+
+    欄位怎麼對到 Item:
+      raw      ← raw/<id>.json 的 stage kind='original',沒有就退回 text/*.zh-cn.txt
+      asr_ref  ← text/<id>.zh-tw.txt   ←← 這是**逐字稿**不是潤稿正解
+      ref      ← manifest 的 gold_final(目前全部是 null)
+      dur_s    ← manifest 的 duration_sec
+
+    ⚠️ .zh-tw.txt 不能當潤稿 reference。它保留語助詞,模型正確刪掉語助詞
+       反而會被算成 CER 錯誤。要量潤稿層的 CER 得先有 gold_final。
+
+    ⚠️ transcript_is_parent_full=true 的 item(teach-03a/b/c)共用母檔的完整
+       逐字稿,不是自己那一段的 —— 預設會被跳過。
+
+--- B. 簡單 layout(沒有 manifest.jsonl 時) ---
+
+    evalset/
       text/<id>-raw.txt     ASR 逐字稿  = 潤稿層的 input
       text/<id>-tw.txt      人工潤過的乾淨文字 = 潤稿層的 reference
-      text/<id>-asr.txt     (選用)人工逐字稿 = ASR 層的 reference。
-                            有這個才算得出 ASR CER;沒有就只有潤稿層分數。
-      meta.jsonl            (選用)一行一 item,補 dur_s / terms / tags。
-                            沒有就從檔名推,dur_s 用 ffprobe 讀 audio/。
-
-meta.jsonl 一行長這樣:
-    {"id":"18","dur_s":76.4,"terms":[["skill"],["typescript","ts"]],
-     "asr":{"source":"openwhispr","model":"funasr-q8_0"},"tags":["real","meeting"]}
+      text/<id>-asr.txt     (選用)人工逐字稿 = ASR 層的 reference
+      meta.jsonl            (選用)補 dur_s / terms / tags
 """
 
 from __future__ import annotations
@@ -40,6 +56,11 @@ class Item:
     terms: list[tuple[str, ...]] = field(default_factory=list)   # 術語表,每項是等價寫法
     tags: list[str] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
+
+    @property
+    def usable(self) -> bool:
+        """有 input 可以送進潤稿模型,而且那個 input 真的對應這段音檔。"""
+        return bool(self.raw) and not self.meta.get("parent_full")
 
 
 @dataclass
@@ -69,9 +90,86 @@ def _ffprobe_seconds(wav: pathlib.Path) -> float | None:
         return None
 
 
+# ---------------------------------------------------------------- Spokenly
+def spokenly_stages(js: pathlib.Path) -> dict:
+    """從 Spokenly 的 dictation 匯出撈出各 stage 的文字與 ASR 模型名。
+
+    結構是 Swift enum 序列化出來的,所以路徑長這樣:
+      content.dictation._0.success._0.{result.transcriptionData, stages[]}
+    stage kind 目前看到:original(ASR 原文)、smartParagraphs、pastePrepared。
+    """
+    d = json.loads(js.read_text())
+    try:
+        s = d["content"]["dictation"]["_0"]["success"]["_0"]
+    except (KeyError, TypeError):
+        return {}
+    out = {st.get("kind"): (st.get("text") or "").strip()
+           for st in s.get("stages", []) if isinstance(st, dict)}
+    td = (s.get("result") or {}).get("transcriptionData") or {}
+    out["_model"] = td.get("modelId")
+    if "original" not in out and td.get("segments"):
+        out["original"] = " ".join((sg.get("text") or "").strip()
+                                   for sg in td["segments"]).strip()
+    return out
+
+
+def load_spokenly_evalset(root: pathlib.Path) -> Dataset:
+    """manifest.jsonl 驅動的 layout。欄位對應見本檔 docstring。"""
+    items = []
+    for line in (root / "manifest.jsonl").read_text().splitlines():
+        if not line.strip():
+            continue
+        m = json.loads(line)
+        i = str(m["id"])
+
+        # ASR 原文:優先用 Spokenly 的 stage original;它是唯一沒被 zhconv 動過的。
+        stages, src = {}, None
+        js = root / "raw" / f"{i}.json"
+        parent = m.get("split_from")
+        if not js.exists() and parent:
+            js = root / "raw" / f"{parent}.json"
+        if js.exists():
+            stages = spokenly_stages(js)
+            src = js.name
+        raw = stages.get("original", "")
+        if not raw:
+            cn = root / "text" / f"{i}.zh-cn.txt"
+            if cn.exists():
+                raw, src = cn.read_text().strip(), cn.name
+
+        # 人工修正過的逐字稿。注意這是 ASR 層的 reference,不是潤稿層的。
+        tw = m.get("transcript_zh_tw")
+        tw_path = root / tw if tw else root / "text" / f"{i}.zh-tw.txt"
+        asr_ref = tw_path.read_text().strip() if tw_path.exists() else None
+
+        # 潤稿層的 reference 目前還不存在(manifest 裡是 null)。
+        gold_final = m.get("gold_final")
+        ref = None
+        if gold_final:
+            gp = root / gold_final
+            ref = gp.read_text().strip() if gp.exists() else str(gold_final)
+
+        items.append(Item(
+            id=i, raw=raw, ref=ref, asr_ref=asr_ref,
+            dur_s=m.get("duration_sec"),
+            terms=[tuple(t) if isinstance(t, (list, tuple)) else (t,)
+                   for t in (m.get("terms") or [])],
+            tags=[t for t in ([m.get("scenario")] + (m.get("tags") or [])) if t],
+            meta={"asr_model": stages.get("_model"), "raw_source": src,
+                  "parent_full": bool(m.get("transcript_is_parent_full")),
+                  "split_from": parent, "paste_to": m.get("paste_to"),
+                  "stages": [k for k in stages if not k.startswith("_")],
+                  "gold_verbatim": m.get("gold_verbatim"),
+                  "gold_final": gold_final},
+        ))
+    return Dataset(root.name, items)
+
+
 def load_evalset(root: pathlib.Path | str = None) -> Dataset:
-    """讀 evalset/。缺 meta.jsonl 也能跑 —— 從檔名推。"""
-    root = pathlib.Path(root) if root else ROOT / "evalset"
+    """讀 evalset/。有 manifest.jsonl 走 Spokenly layout,否則走簡單 layout。"""
+    root = pathlib.Path(root).expanduser() if root else ROOT / "evalset"
+    if root.exists() and (root / "manifest.jsonl").exists():
+        return load_spokenly_evalset(root)
     if not root.exists():
         raise SystemExit(
             f"找不到 {root}/。格式見 tl/dataset.py 的 docstring:\n"
@@ -199,6 +297,7 @@ LOADERS = {
 def load(name: str) -> Dataset:
     if name in LOADERS:
         return LOADERS[name]()
-    if pathlib.Path(name).exists():          # 直接給路徑 = 當 evalset 讀
-        return load_evalset(name)
+    p = pathlib.Path(name).expanduser()
+    if p.exists():                           # 直接給路徑 = 當 evalset 讀
+        return load_evalset(p)
     raise SystemExit(f"不認識的 dataset: {name}\n可用:{', '.join(LOADERS)} 或 evalset 目錄路徑")

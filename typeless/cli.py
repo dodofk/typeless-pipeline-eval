@@ -38,6 +38,15 @@ def cmd_run(a) -> int:
     if a.only:
         keep = set(a.only.split(","))
         data.items = [i for i in data.items if i.id in keep]
+
+    # 沒有 input、或 input 其實是母檔的完整逐字稿 → 跳過並說清楚為什麼。
+    # 靜靜地少跑幾個 item 比報錯更糟 —— 表上的 n 會對不起來。
+    skipped = [i for i in data.items if not i.usable]
+    if skipped and not a.include_unusable:
+        for i in skipped:
+            why = "共用母檔的完整逐字稿,不是這一段的" if i.meta.get("parent_full") else "沒有 input 文字"
+            print(f"跳過 {i.id}:{why}", file=sys.stderr)
+        data.items = [i for i in data.items if i.usable]
     if not data.items:
         sys.exit("資料集是空的")
 
@@ -273,6 +282,8 @@ def main(argv=None) -> int:
     r.add_argument("--input", choices=["asr", "gold"], default="asr",
                    help="asr=餵 ASR 逐字稿(預設);gold=餵人工逐字稿,切開兩層誤差")
     r.add_argument("--only", help="只跑這幾個 id,逗號分隔")
+    r.add_argument("--include-unusable", action="store_true",
+                   help="連沒有對應 input 的 item 也跑(預設跳過)")
     r.add_argument("--notes")
     r.set_defaults(fn=cmd_run)
 

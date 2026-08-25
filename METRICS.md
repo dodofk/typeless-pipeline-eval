@@ -47,24 +47,57 @@
 
 ## evalset 格式
 
+支援兩種 layout，靠有沒有 `manifest.jsonl` 自動判斷。
+
+### A. Spokenly layout（`evalset/` 現在用的）
+
 ```
 evalset/
-  audio/<id>.wav        原始錄音。這套不碰，留給重跑 ASR 用
+  manifest.jsonl        一行一 item，權威索引
+  audio/<id>.wav        原始錄音（這套不碰）
+  raw/<id>.json         Spokenly 的 dictation 匯出（含 ASR 原文與各 stage）
+  text/<id>.zh-cn.txt   ASR 原始輸出，一字未動
+  text/<id>.zh-tw.txt   上面那個轉繁 + 人工修正
+```
+
+欄位怎麼對到 metric：
+
+| Item 欄位 | 來源 | 用途 |
+|---|---|---|
+| `raw` | `raw/<id>.json` 的 `stage kind='original'` | 潤稿層的 input |
+| `asr_ref` | `text/<id>.zh-tw.txt` | **ASR 層**的 reference（逐字稿） |
+| `ref` | manifest 的 `gold_final` | **潤稿層**的 reference（目前 null） |
+| `dur_s` | manifest 的 `duration_sec` | 算 RTF |
+| `terms` | manifest 的 `terms` | 術語召回 / 保留（目前全空） |
+
+**`.zh-tw.txt` 不能當潤稿 reference。** 它保留語助詞（全套 47 個 tier-A），
+拿它算 CER 的話「什麼都不刪」分數最高、清得最乾淨分數最低 —— 實測 `meeting-05`
+一個語助詞都沒刪拿到 0.7%（最好），`agent-03` 積極清理拿到 47.4%（最差）。
+要量潤稿層的 CER 必須先有 `gold_final`。
+
+`transcript_is_parent_full=true` 的 item（`teach-03a/b/c`）共用母檔的完整逐字稿，
+不是自己那一段的 —— 預設跳過並印出原因（`--include-unusable` 可覆蓋）。
+
+### B. 簡單 layout（沒有 manifest.jsonl 時）
+
+```
+evalset/
   text/<id>-raw.txt     ASR 逐字稿      = 潤稿層的 input
   text/<id>-tw.txt      人工潤過的正解  = 潤稿層的 reference
   text/<id>-asr.txt     （選用）人工逐字稿 = ASR 層的 reference
   meta.jsonl            （選用）補 dur_s / terms / tags
 ```
 
-`meta.jsonl` 一行一 item：
+兩種 layout 都一樣：只有 input 也跑得動 —— 無參考那組 metric（語助詞殘留、
+口吃、簡體、長度比、幻覺、judge）永遠算得出來。reference 一補上，CER /
+術語保留自動生效。量不了的顯示 `—`，不是 0。
 
-```json
-{"id":"18","dur_s":76.4,"terms":[["skill"],["typescript","ts"]],"tags":["real","meeting"]}
-```
+## ASR 從哪來
 
-只有 `-raw.txt` 也跑得動 —— 無參考的那組 metric（語助詞殘留、口吃、簡體、
-長度比、幻覺）永遠算得出來。`-tw.txt` 一補上，CER / 術語保留就自動生效。
-`-asr.txt` 補上，ASR 層的 CER 才量得了（目前量不了，會顯示 `—` 不是 0）。
+**這套不呼叫任何 ASR。** 逐字稿是別人產好的副產物，這裡只讀檔。
+目前的來源是 **Spokenly + ElevenLabs API**（`raw/*.json` 的 `modelId`）。
+要換成 OpenWhispr 或其他來源，只要在 `typeless/dataset.py` 加一個 loader，
+metric、report、registry 一行都不用動。
 
 ## run record
 
