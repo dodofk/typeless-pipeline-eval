@@ -24,3 +24,4 @@ logs/
 
 # 真實錄音的逐字稿 —— 公司內部資料,不進版控
 evalset/
+results.jsonl
