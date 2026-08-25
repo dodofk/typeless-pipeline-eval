@@ -5,7 +5,7 @@
 """
 import pathlib
 
-from tl.metrics.halluc import novel_spans
+from typeless.metrics.halluc import novel_spans
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 

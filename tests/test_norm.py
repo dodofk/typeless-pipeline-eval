@@ -3,7 +3,7 @@
 這裡的每一條都對應一個實際踩過的坑或 score.py 術語表裡的等價寫法。
 `uv run python -m tests.test_norm` 或 `uv run tests/test_norm.py`。
 """
-from tl.norm import canon, cer, script_of, simplified_chars, strip_punct, tokens, zhnum
+from typeless.norm import canon, cer, script_of, simplified_chars, strip_punct, tokens, zhnum
 
 CASES = [
     # (輸入 A, 輸入 B, 是否應該 canon 後相等, 說明)

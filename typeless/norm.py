@@ -103,6 +103,20 @@ def canon(s: str) -> str:
     return zhnum(strip_punct(t))
 
 
+def canon_spaced(s: str) -> str:
+    """跟 canon() 一樣,但標點換成單一空格而不是刪掉 —— 保住英文的詞界。
+
+    為什麼要兩種:canon() 去空白是為了讓「top k / top-K / topk」算同一個東西(CER 用),
+    但那會把 "um, I think" 壓成 "umithink",英文的 \b 詞界全毀,所有英文 regex
+    metric 就永遠算出 0。中文的指標要無空白視角(坑 #4 數重複字),英文的要有詞界視角。
+    """
+    t = unicodedata.normalize("NFKC", s.strip())
+    t = fold_zh(t).lower()
+    t = re.sub(r"(?<=\d)\.(?=\d)", _DEC, t)
+    t = PUNCT.sub(" ", t).replace(_DEC, ".")
+    return zhnum(re.sub(r"\s+", " ", t).strip())
+
+
 def tokens(s: str) -> list[str]:
     """給對齊和顯示用:中文一字一 token,英數整串一 token。"""
     return TOKEN.findall(canon(s))
