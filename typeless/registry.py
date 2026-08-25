@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import os
 import platform
 import re
 import subprocess
@@ -33,20 +34,60 @@ def make_run_id(label: str, when: float | None = None) -> str:
     return f"{stamp}-{_SLUG.sub('-', label).strip('-') or 'run'}"
 
 
+def _load_and_mem() -> dict:
+    """負載與記憶體壓力。
+
+    坑 #7 原本只數 llama-server,但這台是記憶體頻寬綁定的 16GB 機器 ——
+    WindowServer / 瀏覽器 / 另一個 agent 一樣會把 tok/s 砍掉一半以上。
+    實測同一個模型同一份 prompt,乾淨時 27 tok/s、有其他負載時 10 tok/s。
+    數字本身留著,可不可比讓看報表的人自己判斷。
+    """
+    out = {}
+    try:
+        out["loadavg"] = [round(x, 2) for x in os.getloadavg()]
+    except Exception:
+        pass
+    try:
+        v = subprocess.run(["memory_pressure"], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"System-wide memory free percentage:\s*(\d+)%", v)
+        if m:
+            out["mem_free_pct"] = int(m.group(1))
+    except Exception:
+        pass
+    try:
+        top = subprocess.run(["ps", "-eo", "pcpu,comm"], capture_output=True,
+                             text=True, timeout=10).stdout.splitlines()[1:]
+        heavy = []
+        for line in top:
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and float(parts[0]) >= 20.0:
+                heavy.append(f"{parts[1].split('/')[-1]}:{parts[0]}%")
+        out["heavy_procs"] = heavy[:6]
+    except Exception:
+        pass
+    return out
+
+
 def env_snapshot(exclusive_expected: bool = True) -> dict:
     """跑的當下環境長怎樣。速度數字可不可信全靠這個。"""
     from .engines import llama_server_count
     n = llama_server_count()
+    load = _load_and_mem()
     try:
         git = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                              capture_output=True, text=True, timeout=10).stdout.strip()
     except Exception:
         git = ""
+    # 別的 llama-server 是硬性不可比;其他重負載是軟性,標記出來讓人自己判斷。
+    contended = bool([h for h in load.get("heavy_procs", [])
+                      if not h.startswith(("claude", "python", "uv"))])
     return {
         "llama_procs": n,
         # 坑 #7:16GB 機器,兩個 llama-server 會互搶記憶體頻寬。
         # 這個旗標一旦是 False,report 就把 tok/s 標成不可比。
-        "speed_trustworthy": (n <= 1) if exclusive_expected else False,
+        "speed_trustworthy": (n <= 1 and not contended) if exclusive_expected else False,
+        "contended": contended,
+        **load,
         "git": git,
         "python": platform.python_version(),
         "platform": f"{platform.system()} {platform.machine()}",
@@ -97,7 +138,14 @@ class Run:
                 "prompt_sha": (self.config.get("polish") or {}).get("prompt_sha"),
                 "temp": (self.config.get("polish") or {}).get("temp"),
                 "input": self.config.get("input"),
+                "asr_src": (lambda m: None if not m else
+                            (m.get("folder") or m.get("stage") or m.get("path")
+                             or m.get("source")))(self.config.get("asr")),
                 "speed_trustworthy": self.env.get("speed_trustworthy"),
+                "speed_why": ("另一個 llama-server 在跑" if (self.env.get("llama_procs") or 0) > 1
+                              else ("機器有其他重負載:"
+                                    + ", ".join(self.env.get("heavy_procs") or [])
+                                    if self.env.get("contended") else None)),
                 "aggregate": self.aggregate}
 
     def _reindex(self) -> None:

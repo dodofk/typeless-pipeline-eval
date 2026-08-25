@@ -16,6 +16,7 @@ import json
 import pathlib
 import sys
 
+from . import asr_sources
 from . import dataset as ds
 from . import engines, judge as judge_mod, report as report_mod, scoring
 from .metrics import halluc
@@ -25,6 +26,34 @@ from .registry import ROOT, Run, make_run_id, env_snapshot, read_index, rebuild_
 # ---------------------------------------------------------------- run
 def cmd_run(a) -> int:
     data = ds.load(a.dataset)
+
+    # --- ASR hypothesis 注入 ---------------------------------------------
+    # raw 屬於 run 不屬於 dataset:同一批音檔換一個 ASR 模型就是另一份 hypothesis。
+    asr_meta = None
+    if a.asr_source:
+        texts, asr_meta = asr_sources.resolve(a.asr_source, evalset_root=a.dataset)
+        rec = data.attach_asr(texts)
+        print(f"ASR 來源 {a.asr_source}:對上 {len(rec['matched'])} 個", file=sys.stderr)
+        if rec["dataset_without_asr"]:
+            print(f"  ⚠️  dataset 有但這個 ASR 來源沒有:{', '.join(rec['dataset_without_asr'])}",
+                  file=sys.stderr)
+        if rec["asr_without_dataset"]:
+            print(f"  ⚠️  ASR 有但 dataset 沒有(不會計分):{', '.join(rec['asr_without_dataset'])}",
+                  file=sys.stderr)
+        if asr_meta.get("duplicates"):
+            print(f"  ⚠️  同一個檔有多筆,取最新:{', '.join(asr_meta['duplicates'])}",
+                  file=sys.stderr)
+        if asr_meta.get("warning"):
+            print(f"  ⚠️  {asr_meta['warning']}", file=sys.stderr)
+    elif a.input != "gold" and any(i.needs_asr_source for i in data.items):
+        sys.exit(
+            "這個 dataset 沒有內建 ASR 逐字稿,要用 --asr-source 指定被測的 ASR 輸出。\n"
+            "  --asr-source openwhispr:<folder>   OpenWhispr audio upload 的結果\n"
+            "  --asr-source openwhispr-polished   OpenWhispr 自己的 AI 潤稿(對照組)\n"
+            "  --asr-source spokenly              Spokenly/ElevenLabs 原文\n"
+            "                                     ⚠️ 那是 ground truth 的來源引擎,\n"
+            "                                        分數是上界不是實力\n"
+            "  --asr-source dir:<path>            一個目錄的 <id>.txt")
 
     # gold-input arm(brief §3):餵人工逐字稿而不是 ASR 輸出,把兩層誤差切開。
     # 同一個潤稿模型跑兩次,差值就是「ASR 的錯誤讓潤稿層額外壞了多少」。
@@ -63,7 +92,7 @@ def cmd_run(a) -> int:
 
     run = Run(run_id=make_run_id(a.label), label=a.label, arm="polish",
               dataset=data.name, env=env, notes=a.notes or "",
-              config={"polish": cfg.as_dict(), "input": a.input})
+              config={"polish": cfg.as_dict(), "input": a.input, "asr": asr_meta})
 
     if not a.no_warm:
         print("暖機…", file=sys.stderr)
@@ -279,6 +308,9 @@ def main(argv=None) -> int:
     r.add_argument("--thinking", action="store_true", help="開 reasoning(潤稿不需要,慢 39 倍)")
     r.add_argument("--no-warm", action="store_true")
     r.add_argument("--judge", action="store_true", help="順便跑語意漂移判定(要 API key)")
+    r.add_argument("--asr-source",
+                   help="被測的 ASR 輸出從哪來:openwhispr[:folder] / "
+                        "openwhispr-polished / spokenly[:stage] / dir:<path>")
     r.add_argument("--input", choices=["asr", "gold"], default="asr",
                    help="asr=餵 ASR 逐字稿(預設);gold=餵人工逐字稿,切開兩層誤差")
     r.add_argument("--only", help="只跑這幾個 id,逗號分隔")

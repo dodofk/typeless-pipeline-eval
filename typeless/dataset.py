@@ -14,7 +14,9 @@ ASR 那一層由外部(OpenWhispr 或其他 code)產出,這裡只吃它的副產
       text/<id>.zh-tw.txt   上面那個轉繁 + 人工修正(逐字稿,語助詞還在)
 
     欄位怎麼對到 Item:
-      raw      ← raw/<id>.json 的 stage kind='original',沒有就退回 text/*.zh-cn.txt
+      raw      ← **不從這裡來**。Spokenly/ElevenLabs 是 ground truth 的來源引擎,
+                 拿它當潤稿 input 等於用答案當考卷。raw 由 --asr-source 在
+                 run 的時候注入(見 typeless/asr_sources.py)。
       asr_ref  ← text/<id>.zh-tw.txt   ←← 這是**逐字稿**不是潤稿正解
       ref      ← manifest 的 gold_final(目前全部是 null)
       dur_s    ← manifest 的 duration_sec
@@ -62,11 +64,32 @@ class Item:
         """有 input 可以送進潤稿模型,而且那個 input 真的對應這段音檔。"""
         return bool(self.raw) and not self.meta.get("parent_full")
 
+    @property
+    def needs_asr_source(self) -> bool:
+        """raw 是空的 —— 要靠 --asr-source 注入。"""
+        return not self.raw and not self.meta.get("parent_full")
+
 
 @dataclass
 class Dataset:
     name: str
     items: list[Item]
+
+    def attach_asr(self, texts: dict) -> dict:
+        """把 --asr-source 撈到的文字填進 items.raw。回傳對帳結果。
+
+        對不上的兩邊都要講 —— 靜靜少跑幾個 item,表上的 n 就對不起來了。
+        """
+        hit, miss = [], []
+        for i in self.items:
+            t = texts.get(i.id)
+            if t:
+                i.raw = t
+                hit.append(i.id)
+            elif not i.meta.get("parent_full"):
+                miss.append(i.id)
+        extra = sorted(set(texts) - {i.id for i in self.items})
+        return {"matched": hit, "dataset_without_asr": miss, "asr_without_dataset": extra}
 
     def __iter__(self):
         return iter(self.items)
@@ -122,7 +145,7 @@ def load_spokenly_evalset(root: pathlib.Path) -> Dataset:
         m = json.loads(line)
         i = str(m["id"])
 
-        # ASR 原文:優先用 Spokenly 的 stage original;它是唯一沒被 zhconv 動過的。
+        # Spokenly 的 stage 只拿來記 meta(哪個引擎、有哪些 stage),不填進 raw。
         stages, src = {}, None
         js = root / "raw" / f"{i}.json"
         parent = m.get("split_from")
@@ -131,11 +154,6 @@ def load_spokenly_evalset(root: pathlib.Path) -> Dataset:
         if js.exists():
             stages = spokenly_stages(js)
             src = js.name
-        raw = stages.get("original", "")
-        if not raw:
-            cn = root / "text" / f"{i}.zh-cn.txt"
-            if cn.exists():
-                raw, src = cn.read_text().strip(), cn.name
 
         # 人工修正過的逐字稿。注意這是 ASR 層的 reference,不是潤稿層的。
         tw = m.get("transcript_zh_tw")
@@ -150,12 +168,12 @@ def load_spokenly_evalset(root: pathlib.Path) -> Dataset:
             ref = gp.read_text().strip() if gp.exists() else str(gold_final)
 
         items.append(Item(
-            id=i, raw=raw, ref=ref, asr_ref=asr_ref,
+            id=i, raw="", ref=ref, asr_ref=asr_ref,
             dur_s=m.get("duration_sec"),
             terms=[tuple(t) if isinstance(t, (list, tuple)) else (t,)
                    for t in (m.get("terms") or [])],
             tags=[t for t in ([m.get("scenario")] + (m.get("tags") or [])) if t],
-            meta={"asr_model": stages.get("_model"), "raw_source": src,
+            meta={"gt_engine": stages.get("_model"), "gt_export": src,
                   "parent_full": bool(m.get("transcript_is_parent_full")),
                   "split_from": parent, "paste_to": m.get("paste_to"),
                   "stages": [k for k in stages if not k.startswith("_")],

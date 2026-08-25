@@ -57,7 +57,7 @@ def table(rows: list[dict], arm: str = "polish") -> str:
     cols = ASR_COLS if arm == "asr" else POLISH_COLS
     out = []
     head = _pad("run", 26, False) + _pad("model", 16, False) + _pad("prompt", 10, False) \
-        + _pad("in", 6, False) + _pad("T", 6) + _pad("n", 5)
+        + _pad("asr", 14, False) + _pad("in", 6, False) + _pad("T", 6) + _pad("n", 5)
     head += "".join(_pad(h, w) for _, h, w, _ in cols)
     out.append(head)
     out.append("-" * _w(head))
@@ -71,6 +71,7 @@ def table(rows: list[dict], arm: str = "polish") -> str:
         tmark = "?" if (temp is not None and temp > 0) else " "
         line = _pad(label[:25], 26, False) + _pad(str(r.get("model") or "—")[:15], 16, False) \
             + _pad(prompt[:9], 10, False) \
+            + _pad(str(r.get("asr_src") or "—")[:13], 14, False) \
             + _pad(r.get("input") or "—", 6, False) \
             + _pad(f"{temp}{tmark}" if temp is not None else "—", 6) \
             + _pad(str(agg.get("n", "—")), 5)
@@ -84,8 +85,10 @@ def table(rows: list[dict], arm: str = "polish") -> str:
     notes = []
     if any((r.get("temp") or 0) > 0 for r in rows):
         notes.append("?  = temp>0,同一組 A/B 的勝負可能純粹是雜訊(坑#3)")
-    if any(r.get("speed_trustworthy") is False for r in rows):
-        notes.append("⚠速度 = 跑的時候不只一個 llama-server,tok/s 不可跨 run 比(坑#7)")
+    whys = {r.get("speed_why") for r in rows if r.get("speed_trustworthy") is False}
+    if whys:
+        notes.append("⚠速度 = tok/s 不可跨 run 比(坑#7)。原因:")
+        notes.extend("     · " + (w or "當時的環境沒記錄") for w in sorted(whys, key=str))
     if notes:
         out.append("")
         out.extend("  " + n for n in notes)

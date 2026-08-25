@@ -92,12 +92,49 @@ evalset/
 口吃、簡體、長度比、幻覺、judge）永遠算得出來。reference 一補上，CER /
 術語保留自動生效。量不了的顯示 `—`，不是 0。
 
-## ASR 從哪來
+## ASR 從哪來 —— 兩端不能弄反
 
-**這套不呼叫任何 ASR。** 逐字稿是別人產好的副產物，這裡只讀檔。
-目前的來源是 **Spokenly + ElevenLabs API**（`raw/*.json` 的 `modelId`）。
-要換成 OpenWhispr 或其他來源，只要在 `typeless/dataset.py` 加一個 loader，
-metric、report、registry 一行都不用動。
+```
+ground truth ← Spokenly + ElevenLabs + 人工修正 → evalset/text/<id>.zh-tw.txt
+hypothesis   ← OpenWhispr audio upload，抽換不同 ASR 模型 → --asr-source
+```
+
+**raw 屬於 run，不屬於 dataset。** 同一批音檔換一個 ASR 模型就是另一份
+hypothesis，全部對同一份 ground truth 計分。所以 `evalset` 的 `Item.raw`
+預設是空的，沒給 `--asr-source` 會直接擋下來 —— 不給的話最容易犯的錯就是
+拿 Spokenly 的輸出當 input，那等於用答案當考卷。
+
+| `--asr-source` | 是什麼 |
+|---|---|
+| `openwhispr:<folder>` | OpenWhispr audio upload 的結果，限定某個 folder |
+| `openwhispr` | 全部的 upload note |
+| `openwhispr-polished` | OpenWhispr 自己的 AI 潤稿（拿來當對照組） |
+| `spokenly[:stage]` | Spokenly/ElevenLabs 原文。⚠️ 是 GT 的來源引擎，分數是上界不是實力 |
+| `dir:<path>` | 一個目錄的 `<id>.txt`，任何 ASR 的逃生出口 |
+
+跑完會印對帳：對上幾個、dataset 有但 ASR 沒有的、ASR 有但 dataset 沒有的、
+同一個檔傳了兩次的。靜靜少跑幾個 item 比報錯更糟。
+
+### ⚠️ OpenWhispr 的 notes 表不記 ASR 模型
+
+audio upload 走 `saveUploadNote()` → `notes` 表，欄位有 `source_file`（原始檔名，
+接合鍵）、`content`（ASR 逐字稿）、`enhanced_content`（OpenWhispr 的 AI 潤稿）、
+`folder_id`、`audio_duration_seconds` —— 但**沒有 `provider` / `model`**。
+
+同一批音檔換三個 ASR 模型各上傳一次，三批 note 在資料庫裡分不出來。
+
+**做法：一個 ASR 模型建一個 folder，各自上傳進去**，然後
+`--asr-source openwhispr:<folder>`。零程式碼修改。
+退路是 `--since` / `--until` 靠 `created_at` 切批次。
+
+## 速度數字什麼時候可信
+
+`env` 每次都記 `llama_procs`、`loadavg`、`mem_free_pct`、`heavy_procs`。
+這台是記憶體頻寬綁定的 16GB 機器，實測同一個模型同一份 prompt：
+乾淨時 **27 tok/s**，WindowServer / 瀏覽器 / 另一個 agent 在跑時 **10 tok/s**。
+
+所以坑 #7 不只是「不要同時起兩個 llama-server」——任何吃頻寬的行程都算。
+`speed_trustworthy=false` 時報表會標 `⚠速度` 並列出當時的重負載行程。
 
 ## run record
 
