@@ -22,9 +22,18 @@ import re
 from .norm import canon, canon_spaced
 
 # ---------------------------------------------------------------- tier A
-# 中文的純發聲。「啊」只在句中算 filler(句尾的「好啊」是語氣,不是雜訊),
-# 但去標點之後沒有句界可判,所以一律計入 —— 寧可高估,兩個 run 之間是可比的。
-FILLER_A_ZH = ["呃", "嗯", "欸", "齁", "啊"]
+# 中文的純發聲。prompt v2 第 20 行寫的是「呃、嗯、欸、齁, sentence-medial 啊」——
+# 句尾的「好啊 / 沒關係啊」是語氣詞不是雜訊,模型留著是對的。
+FILLER_A_ZH = ["呃", "嗯", "欸", "齁"]
+
+# 「啊」要看位置,所以**在原文上數**,不能用 canon()(去標點就沒有句界了)。
+# 排除句尾(後面接標點或字串結束)與 tier B 的「對啊」。
+#
+# ⚠️ 2026-08-25 修:原本把「啊」整個丟進 FILLER_A_ZH 一律計入,理由是「寧可高估,
+#    兩個 run 之間可比」。那個理由在同一份 input 的 A/B 上成立,拿來讀絕對值就錯了 ——
+#    breeze 當上游時 16 個 tier-A 裡有 15 個是句尾的「對啊 / 沒關係啊」,
+#    移除率因此顯示 6.2%,看起來像 prompt 大失敗,其實模型完全照 prompt 做。
+FILLER_A_ZH_MEDIAL = re.compile(r"(?<!對)啊(?![ \t]*(?:[，。！？、；：,.!?…」』）\)\]]|$))")
 FILLER_A_EN = re.compile(r"\b(?:um+|uh+|er|erm|mmm+|hmm+|ah)\b", re.I)
 
 # ---------------------------------------------------------------- tier B
@@ -40,8 +49,11 @@ STUTTER_EN = re.compile(r"\b(\w+)\b(?:[,\s]+\b\1\b)+", re.I)
 
 
 def count_filler_a(text: str) -> int:
-    """tier A 出現次數。傳原文進來,正規化由這裡負責。"""
+    """tier A 出現次數。傳原文進來,正規化由這裡負責。
+
+    「啊」在原文上數(要標點才判得出句尾),其餘在 canon() 上數。"""
     return (sum(canon(text).count(f) for f in FILLER_A_ZH)
+            + len(FILLER_A_ZH_MEDIAL.findall(text))
             + len(FILLER_A_EN.findall(canon_spaced(text))))
 
 
@@ -59,8 +71,12 @@ def count_stutter(text: str) -> int:
 
 
 def drop_filler_a(canon_text: str) -> str:
+    """給 halluc 的「來源變體」用 —— 這裡連句尾的「啊」也一起拿掉。
+
+    刻意比 count_filler_a() 寬:變體只用來判斷輸出推不推導得出來,
+    來源砍多一點只會讓幻覺判定更保守,不會製造假陽性。"""
     t = canon_text
-    for f in FILLER_A_ZH:
+    for f in FILLER_A_ZH + ["啊"]:
         t = t.replace(f, "")
     return FILLER_A_EN.sub("", t)
 
